@@ -9,11 +9,22 @@ It's not hard but non-technical people don't install mods...
 ## WAR Mod Installer
 Task: Create a simple Mod installer which will _safely_
 
-1. Discovered the Warhammer RoR installation directory
+1. Discover the Warhammer RoR installation directory
 2. Allow the user to select the directory where they've downloaded their mod zip files
 3. Safely unzip and copy the mods into the destination folder (pre-checking for duplicate existing mods by folder name and asking for explicit 'overwrite existing version of mod')
-4. A simple GUI interface with Warhammer imagery. Perhaps pulled from a presskit (https://www.igdb.com/games/warhammer-online-age-of-reckoning/presskit) or the Return of Reckoning site.
-5. If possible, discover mod dependencies and note if they're missing. (notably, Pure is one that tends to be delivered with missing dependencies)
+4. A simple GUI with original fantasy heraldry; do not redistribute game or press-kit artwork.
+5. Discover declared mod dependencies and identify missing ones. Required dependencies block installation; optional ones are informational. (Notably, Pure is often delivered without LibSlash.)
+
+Current safety requirements: Windows, Python 3.12+ and the standard library;
+individual replacement approval with installed/incoming version information;
+backups, rollback, and blocking unfinished transactions. Strict manifests are the
+default, with an explicit option for known legacy syntax only. Never edit profiles
+or run addon scripts. See README.md and SECURITY.md for the supported behavior.
+
+Automated sandbox acceptance checks verify extracted bytes, backups, rollback,
+and unchanged source fixtures. They do not establish game compatibility or promise
+that every supplied ZIP is an upgrade. Restore/uninstall UI and code signing are
+future work requiring separate recovery and distribution designs.
 
 
 ## Sandbox

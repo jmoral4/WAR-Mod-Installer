@@ -4,6 +4,7 @@ Run from the repository root: python scripts/validate_sandbox.py
 No discovery and no game executable is launched. No original game files are changed.
 """
 from pathlib import Path
+import argparse
 import hashlib
 import json
 import shutil
@@ -17,6 +18,9 @@ from war_mod_installer.core import Scope, inspect_archive, make_plan, install, t
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--allow-legacy-manifests', action='store_true')
+    args = parser.parse_args()
     scope = Scope(ROOT)
     source = scope.check(ROOT / 'Sandbox' / 'Game' / 'Interface' / 'AddOns')
     downloads = scope.check(ROOT / 'Sandbox' / 'New Mods')
@@ -35,15 +39,16 @@ def main():
     for path in sorted(downloads.iterdir()):
         row = {'archive': path.name}
         try:
-            archive = inspect_archive(path, scope)
-            plan = make_plan(game, (archive,), scope)
+            archive = inspect_archive(path, scope, allow_legacy_manifests=args.allow_legacy_manifests)
+            plan = make_plan(game, (archive,), scope, allow_legacy_manifests=args.allow_legacy_manifests)
             row.update(status='reviewed', folders=[a.folder for a in archive.addons],
-                       missing=plan.missing, overwrites=plan.overwrites)
+                       missing=plan.missing, overwrites=plan.overwrites,
+                       versions=[change.summary for change in plan.versions])
             accepted.append(archive)
         except Exception as exc:
             row.update(status='blocked', reason=str(exc))
         reports.append(row)
-    plan = make_plan(game, tuple(accepted), scope)
+    plan = make_plan(game, tuple(accepted), scope, allow_legacy_manifests=args.allow_legacy_manifests)
     unaffected = {p.name: tree_digest(p, scope) for p in base.iterdir()
                   if p.is_dir() and p.name.casefold() not in {n.casefold() for n, _, _ in plan.targets}}
     transaction = install(plan, set(plan.overwrites), scope)
@@ -63,6 +68,9 @@ def main():
         assert tree_digest(base / folder, scope) == digest
     assert tree_digest(source, scope) == before
     report = {'archives': reports, 'installed_archives': len(accepted), 'verified_files': verified_files,
+              'validation_scope': 'File integrity and transaction checks only; not version suitability or game compatibility.',
+              'allow_legacy_manifests': plan.allow_legacy_manifests,
+              'replacement_versions': [change.summary for change in plan.versions],
               'backup_folders_verified': len(plan.overwrites), 'unaffected_folders_verified': len(unaffected),
               'original_sandbox_addons_unchanged': True, 'warnings': plan.warnings,
               'transaction': str(transaction.relative_to(ROOT))}

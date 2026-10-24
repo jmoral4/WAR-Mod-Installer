@@ -27,6 +27,7 @@ class App:
         self.downloads = tk.StringVar()
         self.status = tk.StringVar(value='Choose your game and downloads folders, then scan your archives.')
         self.closed = tk.BooleanVar()
+        self.allow_legacy_manifests = tk.BooleanVar(value=False)
         root.title('WAR Mod Installer')
         root.geometry('1080x820')
         root.minsize(900, 740)
@@ -61,6 +62,10 @@ class App:
         self.scan_button = ttk.Button(actions, text='Scan archives', command=self.scan, style='Accent.TButton')
         self.scan_button.pack(side='left', padx=8)
         ttk.Label(actions, text='ZIP addons only. UI bundles are flagged for manual installation.', foreground=MUTED).pack(side='left', padx=8)
+        self.legacy_button = ttk.Checkbutton(body, variable=self.allow_legacy_manifests,
+                                           text='Allow known legacy manifest syntax (strict parsing is the default)',
+                                           command=self.parsing_changed)
+        self.legacy_button.pack(anchor='w', pady=(0, 8))
         ttk.Label(body, text='03  SELECT ADDONS', foreground=GOLD).pack(anchor='w', pady=(0, 6))
         table_frame = ttk.Frame(body)
         table_frame.pack(fill='both', expand=True)
@@ -137,7 +142,7 @@ class App:
             return
         self.busy = True
         self.status.set(label)
-        for button in (self.scan_button, self.detect_button, self.install_button):
+        for button in (self.scan_button, self.detect_button, self.install_button, self.legacy_button):
             button.configure(state='disabled')
         def run():
             try:
@@ -153,7 +158,7 @@ class App:
             pass
         else:
             self.busy = False
-            for button in (self.scan_button, self.detect_button, self.install_button):
+            for button in (self.scan_button, self.detect_button, self.install_button, self.legacy_button):
                 button.configure(state='normal')
             if error:
                 self.status.set('Operation stopped. See the details and try again.')
@@ -201,11 +206,21 @@ class App:
                 self.status.set('Multiple installations found; choose the intended game folder.')
         self.work('Checking known game locations…', lambda: discover(self.scope, self.anchor), done)
 
+    def parsing_changed(self):
+        self.table.delete(*self.table.get_children())
+        self.rows.clear()
+        self.chosen.clear()
+        self.status.set('Manifest parsing option changed. Scan archives again.')
+        self.set_details('Legacy mode accepts a missing xml declaration keyword and raw <br> in Description text. '
+                         'Other malformed XML remains blocked. Required dependencies and all archive safety checks still apply. '
+                         'Files are installed unchanged; game compatibility is not verified.')
+
     def scan(self):
         source = self.downloads.get().strip()
         if not source:
             messagebox.showinfo('Choose downloads', 'Choose the folder containing your downloaded archives.', parent=self.root)
             return
+        allow_legacy = self.allow_legacy_manifests.get()
         def operation():
             folder = self.scope.check(Path(source))
             results = []
@@ -213,7 +228,7 @@ class App:
                 if path.suffix.lower() not in ('.zip', '.7z', '.rar'):
                     continue
                 try:
-                    results.append((path.name, inspect_archive(path, self.scope), ''))
+                    results.append((path.name, inspect_archive(path, self.scope, allow_legacy_manifests=allow_legacy), ''))
                 except Exception as exc:
                     results.append((path.name, None, str(exc)))
             return results
@@ -263,6 +278,8 @@ class App:
                 for addon in archive.addons:
                     for module in addon.modules:
                         lines.append(f'{addon.folder}: {module.name} {module.version} | Declared date: {module.declared_date} | Requires: {", ".join(module.required) or "none declared"}')
+                        if module.manifest_repairs:
+                            lines.append('Legacy syntax accepted: ' + '; '.join(module.manifest_repairs))
                 self.set_details('\n'.join(lines))
             else:
                 self.set_details(error)
@@ -276,18 +293,26 @@ class App:
         if not game_text:
             messagebox.showinfo('Choose a game', 'Choose the game directory first.', parent=self.root)
             return
+        allow_legacy = self.allow_legacy_manifests.get()
         self.work('Checking installed addons and required dependencies…',
-                  lambda: make_plan(Path(game_text), selected, self.scope), self.confirm_plan)
+                  lambda: make_plan(Path(game_text), selected, self.scope, allow_legacy_manifests=allow_legacy), self.confirm_plan)
 
     def confirm_plan(self, plan):
         lines = [f'Destination: {plan.game / "Interface" / "AddOns"}', '',
                  *[f'{"REPLACE" if digest else "ADD"}  {actual}' for _, actual, digest in plan.targets]]
+        if plan.allow_legacy_manifests:
+            lines += ['', 'LEGACY MANIFEST SYNTAX ENABLED. Files are installed unchanged; game compatibility is not verified.']
+        if plan.versions:
+            lines += ['', 'REPLACEMENT VERSIONS (installed → incoming):',
+                      *[change.summary for change in plan.versions],
+                      'Only numeric versions can be ordered. Metadata does not prove compatibility.',
+                      'Unknown / unreadable versions cannot rule out a downgrade.']
         if plan.missing:
             lines += ['', 'MISSING REQUIRED DEPENDENCIES:', *plan.missing]
         if plan.optional:
             lines += ['', 'Optional dependencies not found:', *plan.optional]
         if plan.warnings:
-            lines += ['', 'Installed manifest warnings:', *plan.warnings]
+            lines += ['', 'Manifest warnings:', *plan.warnings]
         lines += ['', 'EA_ / EASystem_ / EATemplate_ dependencies are assumed built into the game.',
                   'Dependency checks cannot verify enabled state, version compatibility, or undeclared Lua requirements.']
         self.set_details('\n'.join(lines))
@@ -302,13 +327,18 @@ class App:
         dialog.configure(bg=BG)
         dialog.transient(self.root)
         dialog.grab_set()
-        text = tk.Text(dialog, bg=PANEL, fg=TEXT, font=('Segoe UI', 10), wrap='word', height=13, padx=12, pady=12)
-        text.pack(fill='both', expand=True, padx=16, pady=16)
+        review_frame = ttk.Frame(dialog)
+        review_frame.pack(fill='both', expand=True, padx=16, pady=16)
+        text = tk.Text(review_frame, bg=PANEL, fg=TEXT, font=('Segoe UI', 10), wrap='word', height=13, padx=12, pady=12)
+        review_scroll = ttk.Scrollbar(review_frame, orient='vertical', command=text.yview)
+        review_scroll.pack(side='right', fill='y')
+        text.pack(side='left', fill='both', expand=True)
+        text.configure(yscrollcommand=review_scroll.set)
         text.insert('1.0', '\n'.join(lines))
         text.configure(state='disabled')
         frame = ttk.Frame(dialog, padding=(16, 0))
         frame.pack(fill='both', expand=True)
-        ttk.Label(frame, text='Approve each existing folder to replace it. Its full backup will be kept.', wraplength=690).pack(anchor='w')
+        ttk.Label(frame, text='This is one batch: approve every replacement, or cancel and change the selection. Full backups are kept.', wraplength=690).pack(anchor='w')
         canvas = tk.Canvas(frame, bg=BG, highlightthickness=0, height=110)
         scroll = ttk.Scrollbar(frame, orient='vertical', command=canvas.yview)
         scroll.pack(side='right', fill='y')
@@ -320,7 +350,10 @@ class App:
         approvals = {}
         for folder in plan.overwrites:
             approvals[folder] = tk.BooleanVar()
-            ttk.Checkbutton(checks, text=f'Overwrite existing version of mod: {folder}', variable=approvals[folder]).pack(anchor='w', pady=3)
+            changes = [v for v in plan.versions if v.folder.casefold() == folder.casefold()]
+            caution = (' — POSSIBLE DOWNGRADE' if any(v.assessment == 'POSSIBLE DOWNGRADE' for v in changes)
+                       else ' — version comparison unavailable' if any(v.assessment == 'cannot compare' for v in changes) else '')
+            ttk.Checkbutton(checks, text=f'Overwrite existing version of mod: {folder}{caution}', variable=approvals[folder]).pack(anchor='w', pady=3)
         buttons = ttk.Frame(dialog, padding=16)
         buttons.pack(fill='x')
         def proceed():
@@ -329,12 +362,14 @@ class App:
                 return
             approved = set(approvals)
             dialog.destroy()
+            self.closed.set(False)
             self.work('Staging files, then installing with backups…', lambda: install(plan, approved, self.scope), self.installed)
         ttk.Button(buttons, text='Cancel', command=dialog.destroy).pack(side='left')
         ttk.Button(buttons, text='Install these addons', style='Accent.TButton', command=proceed).pack(side='right')
         self.status.set('Review the destination, dependencies, and overwrite approvals.')
 
     def installed(self, transaction):
+        self.closed.set(False)
         self.status.set('Installation complete. Backups and an installation record have been saved.')
         self.set_details(f'Installed successfully.\nBackups and record: {transaction}\nStart the game and check its addon manager. Enable the addons and dependencies as needed.')
         self.chosen.clear()

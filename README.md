@@ -7,11 +7,16 @@ before replacement. No game resources or addon archives are distributed here.
 
 ## Run
 
-**Windows executable:** download the `WAR-Mod-Installer-windows-x64` artifact from a
-successful GitHub Actions build, extract it, and run `WAR-Mod-Installer.exe`.
+**Windows executable:** when a release is available, download
+`WAR-Mod-Installer-windows-x64.zip` from the repository's **Releases** page,
+extract it, and run `WAR-Mod-Installer.exe`. Development builds are available as
+the `WAR-Mod-Installer-windows-x64` artifact from a successful GitHub Actions run;
+extract the artifact and then its enclosed ZIP.
 Python is bundled; no separate Python install is needed. Builds are currently
-unsigned. The workflow builds artifacts on pushes, pull requests, and manual runs;
-it does not publish a GitHub Release automatically.
+unsigned. The workflow builds artifacts on pushes, pull requests, and manual runs.
+Pushing a `vMAJOR.MINOR.PATCH` tag matching `pyproject.toml` publishes the tested
+ZIP and its SHA-256 checksum as a GitHub Release after the build succeeds.
+Existing releases are never overwritten. No signing certificate is configured.
 
 **From source:** install Python 3.12+ with Tcl/Tk support from
 [python.org](https://www.python.org/downloads/windows/), then run:
@@ -36,6 +41,8 @@ resolve its permissions yourself; the app does not elevate or alter permissions.
    Space). Select a row to read its module versions and declared dependencies.
 5. Confirm the game/launcher are closed and click **Review & install selected**.
    Review the exact destination, new/replaced folders, and dependency information.
+   Replacement review shows installed → incoming module versions. Possible numeric
+   downgrades and unknown versions are flagged; metadata does not prove compatibility.
    Check **Overwrite existing version of mod** individually for each replacement.
 6. Click **Install these addons**. After success, start the game and check its addon
    manager to enable your addons and their dependencies.
@@ -64,6 +71,16 @@ modules. Enabled state, version compatibility, and undeclared Lua dependencies
 cannot be established by these files. Malformed installed manifests are reported
 and are not treated as proof that their modules are available.
 
+Strict XML parsing is the default. **Allow known legacy manifest syntax** is an
+optional checkbox for two observed addon defects: a missing `xml` keyword in the
+opening declaration, and raw `<br>` text inside a standalone `Description text`
+attribute. Changing the option clears the scan and selection. Scan again, then
+review the reported legacy syntax and versions before approving replacements.
+The installer repairs only its in-memory parsing copy and still parses the entire
+XML document; installed files remain byte-for-byte identical to the ZIP. Other
+malformed XML, DTD/entity declarations, and missing required dependencies remain
+blocked. This option does not establish that the game will load the addon.
+
 Supported layouts include `Addon/Addon.mod`, multiple addon folders, and simple
 wrappers such as `release/Interface/AddOns/Addon/Addon.mod`. Nested supporting
 modules stay inside their parent addon. Ambiguous layouts, settings/profile bundles,
@@ -71,6 +88,10 @@ unknown file types, 7z and RAR archives are blocked. **VinyUI is intentionally
 unsupported**; follow its own manual instructions. The installer never runs
 downloaded scripts. Future complex installs would need reviewed recipes bound to
 an exact archive hash; no recipe executor is implemented in this version.
+
+Extensionless `LICENSE`, `README`, and `CHANGELOG` files are accepted. Loose
+documentation outside addon folders is not installed. `.DS_Store`, `.gitignore`,
+and AppleDouble `._*` metadata inside `__MACOSX` are discarded after safety checks.
 
 ## Backups and recovery
 
@@ -109,6 +130,7 @@ automatically. The explicit equivalent is:
 python -m war_mod_installer --sandbox-root C:\git\WAR-Mod-Installer
 python -m unittest discover -s tests -v
 python scripts/validate_sandbox.py
+python scripts/validate_sandbox.py --allow-legacy-manifests
 ```
 
 Sandbox mode restricts **all application game/archive reads and writes** to the
@@ -119,6 +141,9 @@ The integration script makes a disposable copy of the sandbox's addon folders
 under `Sandbox/Validation`, uses a non-executable game marker, installs accepted
 archives there, verifies installed bytes/backups/unaffected folders, and confirms
 the original sandbox addon tree is unchanged. It never launches the game.
+It approves fixture replacements to exercise transactions, including possible
+downgrades. A passing integration run proves file integrity and backup behavior,
+not that the selected versions are suitable upgrades or work in the game.
 
 For a convenient sandbox launch, run `./Run-Sandbox.ps1` from PowerShell. It uses
 the newest local executable from `dist` or `dist/updated`, otherwise the source app, and always passes the

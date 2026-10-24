@@ -9,6 +9,14 @@ and oversized archives. It never executes downloaded files or install scripts.
 Archive limits: 256 MiB compressed, 512 MiB expanded, 64 MiB per file, 1 MiB per
 manifest, 10,000 entries, and 1000:1 maximum compression ratio per file.
 
+Strict XML parsing is the default. An explicit legacy-syntax option permits only
+two in-memory repairs: inserting the missing `xml` keyword in an opening
+declaration and escaping literal `<br>` in a standalone `Description text`
+attribute. The complete repaired document must still parse as XML; UiMod names,
+dependency declarations, and element structure are never guessed or discarded.
+DTD/entity and size checks still run first. The mode and accepted repairs are
+recorded in review and transaction records. Payload files are installed unchanged.
+
 Only recognized addon trees are mapped into `Interface/AddOns`. Whole UI bundles,
 game settings, and game binaries are unsupported. Unknown or ambiguous layouts
 fail closed. VinyUI is explicitly blocked, even when renamed if its content still
@@ -19,6 +27,8 @@ Replacements require individual approval. The reviewed ZIP is hashed, then copie
 and rehashed into a private staging transaction. CRC validation occurs during
 extraction. All selected archives are staged before any existing addon is moved.
 Changed destinations invalidate approval. Old folders are retained in backups.
+Replacement review flags lower numeric versions and unknown comparisons. Free-text
+versions are not ordered, and even numeric versions are not compatibility evidence.
 Ordinary commit failures trigger rollback; interrupted/crashed transactions require
 manual recovery and block subsequent installs. A journal is not a filesystem-wide
 atomic transaction or a power-loss guarantee.

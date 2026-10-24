@@ -33,6 +33,11 @@ ALLOWED = {'.lua', '.xml', '.mod', '.dds', '.tga', '.png', '.jpg', '.jpeg',
            '.bmp', '.ttf', '.otf', '.wav', '.mp3', '.ogg', '.txt', '.md', '.license'}
 RESERVED = re.compile(r'^(CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])(?:\.|$)', re.I)
 BUILTIN_PREFIXES = ('ea_', 'easystem_', 'eatemplate_')
+DOCUMENT_NAMES = {'license', 'readme', 'changelog'}
+
+
+def is_document(name: str) -> bool:
+    return name.lower() in DOCUMENT_NAMES or PurePosixPath(name).suffix.lower() in ('.txt', '.md', '.license')
 
 
 def safe_parts(name: str) -> tuple[str, ...]:
@@ -80,6 +85,7 @@ class Module:
     declared_date: str = 'not declared'
     manifest: str = ''
     archive_timestamp: str = 'not available'
+    manifest_repairs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -96,6 +102,39 @@ class Archive:
     # ZIP member -> destination relative to AddOns
     files: tuple[tuple[str, str], ...]
     size: int
+    allow_legacy_manifests: bool = False
+
+
+@dataclass(frozen=True)
+class VersionChange:
+    folder: str
+    module: str
+    installed: tuple[str, ...]
+    incoming: str | None
+
+    @property
+    def assessment(self) -> str:
+        if self.incoming is None:
+            return 'module removed'
+        if len(self.installed) != 1:
+            return 'cannot compare'
+        old, new = self.installed[0], self.incoming
+        # Addon versions are free text. Compare only unambiguous numeric components.
+        if not all(re.fullmatch(r'[0-9]+(?:\.[0-9]+)*', v) for v in (old, new)):
+            return 'cannot compare'
+        # Avoid integer conversion limits on untrusted, arbitrarily long components.
+        def components(value):
+            parts = [p.lstrip('0') or '0' for p in value.split('.')]
+            while parts and parts[-1] == '0':
+                parts.pop()
+            return tuple((len(p), p) for p in parts)
+        before, after = components(old), components(new)
+        return 'POSSIBLE DOWNGRADE' if after < before else 'same version' if after == before else 'higher version'
+
+    @property
+    def summary(self) -> str:
+        return (f'{self.folder} / {self.module}: {", ".join(self.installed) or "unknown / unreadable"}'
+                f' → {self.incoming if self.incoming is not None else "not included"} [{self.assessment}]')
 
 
 @dataclass(frozen=True)
@@ -107,6 +146,8 @@ class Plan:
     missing: tuple[str, ...]
     optional: tuple[str, ...]
     warnings: tuple[str, ...]
+    versions: tuple[VersionChange, ...]
+    allow_legacy_manifests: bool = False
 
     @property
     def overwrites(self) -> tuple[str, ...]:
@@ -118,17 +159,45 @@ def sha256(path: Path, scope: Scope) -> str:
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
-def read_module(data: bytes) -> tuple[Module, ...]:
+def _legacy_manifest(data: bytes) -> tuple[bytes, tuple[str, ...]]:
+    """Repair two known syntax defects in memory; never guess module/dependency tags."""
+    repairs = []
+    data, count = re.subn(rb'\A(\xef\xbb\xbf)?<\?(?=\s+version=)',
+                          lambda m: (m[1] or b'') + b'<?xml', data, count=1)
+    if count:
+        repairs.append('missing xml in the opening declaration')
+    # Only the standalone Description text attribute gets this narrowly scoped
+    # repair. UiMod and Dependency attributes and all element nesting stay strict.
+    def description(match):
+        value = match[2]
+        fixed = value.replace(b'<br>', b'&lt;br&gt;')
+        if fixed != value:
+            repairs.append('raw <br> in Description text')
+        return match[1] + fixed + match[3]
+    data = re.sub(rb'''(<Description\s+text=)("[^"]*"|'[^']*')(\s*/>)''', description, data)
+    return data, tuple(dict.fromkeys(repairs))
+
+
+def read_module(data: bytes, *, allow_legacy_manifests: bool = False) -> tuple[Module, ...]:
     if len(data) > MAX_MANIFEST:
         raise SafetyError('Addon manifest exceeds 1 MiB.')
     # Reject declarations even for UTF-16/32 input; ElementTree never fetches URLs.
     probe = data.replace(b'\x00', b'').upper()
     if b'<!DOCTYPE' in probe or b'<!ENTITY' in probe:
         raise SafetyError('DTD/entity declarations are not permitted in addon manifests.')
+    repairs = ()
     try:
         root = ET.fromstring(data)
     except ET.ParseError as exc:
-        raise SafetyError(f'Invalid addon manifest: {exc}') from exc
+        if not allow_legacy_manifests:
+            raise SafetyError(f'Invalid addon manifest: {exc}') from exc
+        repaired, repairs = _legacy_manifest(data)
+        if not repairs:
+            raise SafetyError(f'Invalid addon manifest; no supported legacy repair: {exc}') from exc
+        try:
+            root = ET.fromstring(repaired)
+        except ET.ParseError as legacy_exc:
+            raise SafetyError(f'Invalid addon manifest after known legacy repairs: {legacy_exc}') from legacy_exc
     modules = []
     for element in root.iter('UiMod'):
         name = element.get('name', '').strip()
@@ -141,13 +210,13 @@ def read_module(data: bytes) -> tuple[Module, ...]:
                 raise SafetyError('Dependency is missing its name.')
             (optional if dep.get('optional', '').lower() == 'true' else required).append(value)
         modules.append(Module(name, element.get('version', 'unknown'), tuple(required), tuple(optional),
-                              element.get('date', 'not declared')))
+                              element.get('date', 'not declared'), manifest_repairs=repairs))
     if not modules:
         raise SafetyError('Manifest contains no UiMod declaration.')
     return tuple(modules)
 
 
-def inspect_archive(path: Path, scope: Scope = Scope()) -> Archive:
+def inspect_archive(path: Path, scope: Scope = Scope(), *, allow_legacy_manifests: bool = False) -> Archive:
     path = scope.check(path)
     if 'vinyui' in re.sub(r'[^a-z0-9]', '', path.name.lower()):
         raise SafetyError('VinyUI is a complex UI bundle. Follow its manual install instructions.')
@@ -164,9 +233,9 @@ def inspect_archive(path: Path, scope: Scope = Scope()) -> Archive:
         files = []
         total = 0
         for entry in entries:
-            if entry.orig_filename != entry.filename:
+            if '\x00' in entry.orig_filename:
                 raise SafetyError('ZIP member contains a NUL character.')
-            parts = safe_parts(entry.filename)
+            parts = safe_parts(entry.orig_filename)
             key = '/'.join(parts).casefold()
             mode = entry.external_attr >> 16
             if stat.S_IFMT(mode) not in (0, stat.S_IFREG, stat.S_IFDIR) or entry.external_attr & 0x400:
@@ -175,19 +244,25 @@ def inspect_archive(path: Path, scope: Scope = Scope()) -> Archive:
                 raise SafetyError('Encrypted archives are unsupported.')
             if key in seen:
                 raise SafetyError(f'Duplicate/case-colliding ZIP member: {entry.filename}')
-            seen[key] = entry.is_dir()
-            if entry.is_dir():
+            is_directory = entry.orig_filename.endswith(('/', '\\'))
+            seen[key] = is_directory
+            if is_directory:
                 continue
             if entry.file_size > MAX_FILE or entry.file_size > max(1, entry.compress_size) * 1000:
                 raise SafetyError('ZIP member exceeds size or compression-ratio limits.')
             total += entry.file_size
             if total > MAX_TOTAL:
                 raise SafetyError('Expanded archive exceeds 512 MiB.')
-            suffix = PurePosixPath(parts[-1]).suffix.lower()
-            if suffix not in ALLOWED and parts[-1].lower() not in ('license', 'readme', 'changelog'):
-                raise SafetyError(f'Unsupported file type (possibly a complex bundle): {entry.filename}')
             if any('vinyui' in re.sub(r'[^a-z0-9]', '', p.lower()) for p in parts):
                 raise SafetyError('VinyUI content requires a version-specific manual install.')
+            # Discard only recognized packaging metadata, after path/link/size checks.
+            # Arbitrary payloads in __MACOSX are still rejected by normal validation.
+            if (parts[-1].lower() in ('.ds_store', '.gitignore')
+                    or ('__macosx' in (p.lower() for p in parts[:-1]) and parts[-1].startswith('._'))):
+                continue
+            suffix = PurePosixPath(parts[-1]).suffix.lower()
+            if suffix not in ALLOWED and parts[-1].lower() not in DOCUMENT_NAMES:
+                raise SafetyError(f'Unsupported file type (possibly a complex bundle): {entry.filename}')
             files.append((entry, parts))
         for key in seen:
             for parent in PurePosixPath(key).parents:
@@ -201,7 +276,7 @@ def inspect_archive(path: Path, scope: Scope = Scope()) -> Archive:
         while True:
             relative = [p[len(prefix):] for _, p in files]
             # Loose documentation alongside addon folders is harmless, but never copied.
-            content = [p for p in relative if not (len(p) == 1 and PurePosixPath(p[0]).suffix.lower() in ('.txt', '.md', '.license'))]
+            content = [p for p in relative if not (len(p) == 1 and is_document(p[0]))]
             if not content:
                 raise SafetyError('No addon content found.')
             roots = {p[0] for p in content}
@@ -219,7 +294,7 @@ def inspect_archive(path: Path, scope: Scope = Scope()) -> Archive:
         direct_manifests = set()
         for entry, parts in files:
             parts = parts[len(prefix):]
-            if len(parts) == 1 and PurePosixPath(parts[0]).suffix.lower() in ('.txt', '.md', '.license'):
+            if len(parts) == 1 and is_document(parts[0]):
                 continue
             if len(parts) < 2 or parts[0].lower() in ('user', 'cache', 'logs', 'interface', 'addons'):
                 raise SafetyError('Ambiguous layout or game settings found. Install this bundle manually.')
@@ -235,7 +310,7 @@ def inspect_archive(path: Path, scope: Scope = Scope()) -> Archive:
                 y, month, day, hour, minute, second = entry.date_time
                 stamp = f'{y:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}'
                 modules[folder].extend(replace(m, manifest='/'.join(parts), archive_timestamp=stamp)
-                                       for m in read_module(archive.read(entry)))
+                                       for m in read_module(archive.read(entry), allow_legacy_manifests=allow_legacy_manifests))
                 if len(parts) == 2:
                     direct_manifests.add(folder)
         if not modules or any(folder not in direct_manifests for folder in modules):
@@ -245,7 +320,8 @@ def inspect_archive(path: Path, scope: Scope = Scope()) -> Archive:
             raise SafetyError('Duplicate UiMod identities in archive.')
     if sha256(path, scope) != before:
         raise SafetyError('Archive changed during inspection. Scan again.')
-    return Archive(path, before, tuple(Addon(k, tuple(v)) for k, v in modules.items()), tuple(mapped), total)
+    return Archive(path, before, tuple(Addon(k, tuple(v)) for k, v in modules.items()), tuple(mapped), total,
+                   allow_legacy_manifests)
 
 
 def validate_game(path: Path, scope: Scope) -> Path:
@@ -277,23 +353,29 @@ def tree_digest(path: Path, scope: Scope) -> str:
     return digest.hexdigest()
 
 
-def installed_modules(game: Path, scope: Scope, exclude: set[str]):
+def installed_modules(game: Path, scope: Scope, *, allow_legacy_manifests: bool = False):
     result: dict[str, list[tuple[str, str]]] = {}
+    by_folder: dict[str, list[Module]] = {}
     warnings = []
     base = scope.check(game / 'Interface' / 'AddOns')
     if not base.exists():
-        return result, warnings
-    for folder in base.iterdir():
+        return result, warnings, by_folder
+    for folder in sorted(base.iterdir()):
         scope.check(folder)
-        if folder.name.casefold() in exclude or not folder.is_dir():
+        if not folder.is_dir():
             continue
-        for file in walk_files(folder, scope):
+        for file in sorted(walk_files(folder, scope)):
             if file.suffix.lower() != '.mod':
                 continue
             try:
                 if file.stat().st_size > MAX_MANIFEST:
                     raise SafetyError('Manifest too large')
-                for module in read_module(file.read_bytes()):
+                modules = read_module(file.read_bytes(), allow_legacy_manifests=allow_legacy_manifests)
+                if modules[0].manifest_repairs:
+                    warnings.append(f'Legacy manifest syntax accepted in installed {file.relative_to(base).as_posix()}: '
+                                    + '; '.join(modules[0].manifest_repairs))
+                for module in modules:
+                    by_folder.setdefault(folder.name.casefold(), []).append(module)
                     modified = datetime.fromtimestamp(file.stat().st_mtime, timezone.utc).isoformat(timespec='seconds')
                     result.setdefault(module.name.casefold(), []).append((
                         folder.name, f'Installed addon "{folder.name}": Interface/AddOns/{file.relative_to(base).as_posix()}\n'
@@ -301,10 +383,10 @@ def installed_modules(game: Path, scope: Scope, exclude: set[str]):
                         f'    Manifest file modified (UTC): {modified}'))
             except (SafetyError, OSError) as exc:
                 warnings.append(f'Could not read installed manifest {folder.name}/{file.name}: {exc}')
-    return result, warnings
+    return result, warnings, by_folder
 
 
-def make_plan(game: Path, archives: tuple[Archive, ...], scope: Scope = Scope()) -> Plan:
+def make_plan(game: Path, archives: tuple[Archive, ...], scope: Scope = Scope(), *, allow_legacy_manifests: bool = False) -> Plan:
     game = validate_game(game, scope)
     if not archives:
         raise SafetyError('Select at least one supported archive.')
@@ -312,6 +394,8 @@ def make_plan(game: Path, archives: tuple[Archive, ...], scope: Scope = Scope())
     if len({n.casefold() for n in folders}) != len(folders):
         raise SafetyError('Selected archives supply the same addon folder. Select only one version.')
     for archive in archives:
+        if archive.allow_legacy_manifests != allow_legacy_manifests:
+            raise SafetyError('Manifest parsing option changed. Scan the archives again before reviewing.')
         if sha256(archive.path, scope) != archive.digest:
             raise SafetyError(f'{archive.path.name} changed. Scan again.')
     base = scope.check(game / 'Interface' / 'AddOns')
@@ -326,13 +410,34 @@ def make_plan(game: Path, archives: tuple[Archive, ...], scope: Scope = Scope())
     for folder in folders:
         path = existing.get(folder.casefold())
         targets.append((folder, path.name if path else folder, tree_digest(path, scope) if path else ''))
-    provided, warnings = installed_modules(game, scope, {n.casefold() for n in folders})
+    installed, warnings, by_folder = installed_modules(game, scope, allow_legacy_manifests=allow_legacy_manifests)
+    replaced = {n.casefold() for n in folders}
+    provided = {key: remaining for key, providers in installed.items()
+                if (remaining := [(folder, detail) for folder, detail in providers if folder.casefold() not in replaced])}
+    versions = []
+    for archive in archives:
+        for addon in archive.addons:
+            if addon.folder.casefold() not in existing:
+                continue
+            old = by_folder.get(addon.folder.casefold(), [])
+            for module in addon.modules:
+                versions.append(VersionChange(addon.folder, module.name,
+                                tuple(m.version for m in old if m.name.casefold() == module.name.casefold()), module.version))
+            incoming_names = {m.name.casefold() for m in addon.modules}
+            for module in old:
+                if module.name.casefold() not in incoming_names:
+                    versions.append(VersionChange(addon.folder, module.name, (module.version,), None))
     new_modules = []
     conflicts = {}
     for archive in archives:
         for addon in archive.addons:
             for module in addon.modules:
                 new_modules.append(module)
+                if module.manifest_repairs:
+                    warning = (f'Legacy manifest syntax accepted in {archive.path.name}: {module.manifest}: '
+                               + '; '.join(module.manifest_repairs))
+                    if warning not in warnings:
+                        warnings.append(warning)
                 key = module.name.casefold()
                 providers = provided.setdefault(key, [])
                 providers.append((addon.folder, f'Selected addon "{addon.folder}" from "{archive.path.name}"\n'
@@ -362,7 +467,8 @@ def make_plan(game: Path, archives: tuple[Archive, ...], scope: Scope = Scope())
             for name in deps:
                 if name.casefold() not in provided and not name.lower().startswith(BUILTIN_PREFIXES):
                     output.add(f'{module.name} needs {name}')
-    return Plan(game, archives, tuple(targets), tuple(sorted(missing)), tuple(sorted(optional)), tuple(warnings))
+    return Plan(game, archives, tuple(targets), tuple(sorted(missing)), tuple(sorted(optional)), tuple(warnings),
+                tuple(versions), allow_legacy_manifests)
 
 
 def _journal(path: Path, data: dict, scope: Scope):
@@ -377,7 +483,7 @@ def _journal(path: Path, data: dict, scope: Scope):
 
 def install(plan: Plan, approved_overwrites: set[str], scope: Scope = Scope()) -> Path:
     """Stage everything before moving any installed folder; preserve backups and journal."""
-    fresh = make_plan(plan.game, plan.archives, scope)
+    fresh = make_plan(plan.game, plan.archives, scope, allow_legacy_manifests=plan.allow_legacy_manifests)
     if fresh != plan:
         raise SafetyError('The game or dependencies changed since review. Review a fresh plan.')
     if plan.missing:
@@ -399,13 +505,19 @@ def install(plan: Plan, approved_overwrites: set[str], scope: Scope = Scope()) -
     moved = []
     placed = []
     data = {'status': 'staging', 'game': str(plan.game), 'targets': plan.targets,
+            'allow_legacy_manifests': plan.allow_legacy_manifests, 'warnings': plan.warnings,
             'archives': [{'name': a.path.name, 'sha256': a.digest} for a in plan.archives]}
     try:
         for previous in history.iterdir():
             scope.check(previous)
             if previous.is_dir():
                 journal = scope.check(previous / 'transaction.json')
-                if not journal.is_file() or json.loads(journal.read_text('utf-8')).get('status') not in ('complete', 'rolled_back'):
+                try:
+                    record = json.loads(journal.read_text('utf-8'))
+                except (OSError, ValueError) as exc:
+                    raise SafetyError(f'Unreadable transaction record requires manual recovery: {previous}. '
+                                      'Preserve this directory and follow the README recovery instructions.') from exc
+                if not isinstance(record, dict) or record.get('status') not in ('complete', 'rolled_back'):
                     raise SafetyError(f'Unfinished transaction requires manual recovery: {previous}')
         transaction.mkdir()
         stage = transaction / 'staged'
@@ -442,7 +554,7 @@ def install(plan: Plan, approved_overwrites: set[str], scope: Scope = Scope()) -
                     if written != entry.file_size:
                         raise SafetyError('Truncated archive member.')
             snapshot.unlink()
-        if make_plan(plan.game, plan.archives, scope) != plan:
+        if make_plan(plan.game, plan.archives, scope, allow_legacy_manifests=plan.allow_legacy_manifests) != plan:
             raise SafetyError('Installation changed during staging. Review again.')
         data['status'] = 'committing'
         _journal(transaction, data, scope)
@@ -478,4 +590,4 @@ def install(plan: Plan, approved_overwrites: set[str], scope: Scope = Scope()) -
             raise SafetyError(f'Install failed; manual recovery required at {transaction}: {failures}') from exc
         raise
     finally:
-        scope.check(lock).unlink()
+        scope.check(lock).unlink(missing_ok=True)

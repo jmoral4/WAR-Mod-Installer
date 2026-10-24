@@ -1,5 +1,44 @@
 # Validation — 2026-10-24
 
+## Current code-review remediation checks
+
+`python -m unittest discover -s tests -v`: **49 passed, 2 skipped** (51 total).
+Native symlink and junction creation were unavailable in the restricted command
+sandbox; the reparse-attribute checks passed. New regression cases cover version
+comparison, strict/legacy parsing and mode binding, real backslash ZIP headers,
+metadata omission, extensionless documents, corrupt journals, missing-lock error
+preservation, and mocked discovery. Existing dependency/transaction tests passed.
+
+Both `python scripts/validate_sandbox.py` and its `--allow-legacy-manifests` variant
+passed in separate disposable copies. Each verified **404 installed files**,
+**6 backups**, **57 unaffected folders**, and the unchanged source addon tree.
+Effigy and VinyUI remain blocked. Strict parsing flags four numeric downgrades and
+TidyChat's unreadable version; legacy mode reads that version and flags all five.
+The integration runner intentionally approves fixture replacements to exercise
+transactions. These passes are **file-integrity results**, not recommended upgrades
+or evidence of game compatibility.
+
+Local reports (ignored by Git):
+
+- `Sandbox/Validation/2bef11863c6b4561befa015a8ffb9bf8/report.json` (strict)
+- `Sandbox/Validation/472f49b187274b06bf757915b6e769c2/report.json` (legacy)
+
+A temporary synthetic Tk widget check under `.test-work`, with explicit
+`--sandbox-root`, passed for the strict default, scan-time checkbox disabling,
+legacy-mode rescan, downgrade/repair warnings, unchecked overwrite approval, and
+cancel without installation. Footer bounds were checked programmatically. This
+was not visual inspection or a packaged-executable test.
+
+Compile and whitespace checks passed. The release workflow was statically checked,
+but no hosted build or release was run. No executable was rebuilt, no in-game
+behavior was tested, and no real game installation was accessed. See
+[the review follow-up](CODE_REVIEW_FOLLOWUP.md) for every finding's disposition.
+
+## Historical initial validation
+
+The sections below preserve earlier results; their test counts and executable/GUI
+checks do not describe the current remediation build.
+
 All game/archive inspection and installation work was restricted to
 `C:\git\WAR-Mod-Installer`. No actual Return of Reckoning installation outside
 the repository was inspected, modified, or launched.
