@@ -1,1 +1,38 @@
+# Local game copies, downloaded mods, and test fixtures
 /Sandbox/
+/.test-work/
+
+# Generated Windows builds and packaging metadata
+/build/
+/dist/
+*.spec
+*.egg-info/
+
+# Python environments, bytecode, and test/tool caches
+/.venv/
+/venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+
+# Local credentials and developer settings
+.env
+.env.*
+!.env.example
+/.aws/
+/.codex/
+/.claude/
+/.idea/
+/.vs/
+
+# Operating-system metadata
+.DS_Store
+Thumbs.db
+desktop.ini

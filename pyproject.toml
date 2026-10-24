@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "war-mod-installer"
+version = "0.1.0"
+description = "Conservative offline Return of Reckoning addon installer"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+dependencies = []
+
+[project.gui-scripts]
+war-mod-installer = "war_mod_installer.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["war_mod_installer*"]

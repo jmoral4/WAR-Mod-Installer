@@ -1,0 +1,32 @@
+name: Test and build Windows executable
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-build.txt
+      - run: python -m unittest discover -s tests -v
+      - run: python -m pip install -r requirements-build.txt
+      - run: python -m PyInstaller --noconfirm --clean --onefile --windowed --name WAR-Mod-Installer launch.pyw
+      - name: Package documentation and checksum
+        shell: pwsh
+        run: |
+          Copy-Item README.md, LICENSE, SECURITY.md -Destination dist
+          Copy-Item docs -Destination dist/docs -Recurse
+          (Get-FileHash dist/WAR-Mod-Installer.exe -Algorithm SHA256).Hash + '  WAR-Mod-Installer.exe' | Set-Content dist/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WAR-Mod-Installer-windows-x64
+          path: dist/*

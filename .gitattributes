@@ -1,0 +1,7 @@
+# Keep source and documentation consistent across Windows and GitHub runners.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.ico binary
+*.zip binary
+*.exe binary

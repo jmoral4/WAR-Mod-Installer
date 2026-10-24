@@ -1,0 +1,34 @@
+# Warhammer Online: Return of Reckoning Mod Installer
+
+## Background
+
+Friends playing with me struggle to install mods safely and frequently run into issues or even break their entire install.
+
+It's not hard but non-technical people don't install mods...
+
+## WAR Mod Installer
+Task: Create a simple Mod installer which will _safely_
+
+1. Discovered the Warhammer RoR installation directory
+2. Allow the user to select the directory where they've downloaded their mod zip files
+3. Safely unzip and copy the mods into the destination folder (pre-checking for duplicate existing mods by folder name and asking for explicit 'overwrite existing version of mod')
+4. A simple GUI interface with Warhammer imagery. Perhaps pulled from a presskit (https://www.igdb.com/games/warhammer-online-age-of-reckoning/presskit) or the Return of Reckoning site.
+5. If possible, discover mod dependencies and note if they're missing. (notably, Pure is one that tends to be delivered with missing dependencies)
+
+
+## Sandbox
+
+The sandbox directory contains a `Game/` directory containing a duplicate of the current version of the game. USE THIS for testing.
+
+The `New Mods` directory contains some mods that have been downloaded
+
+IMPORTANT: VinyUI mod is an example of a "Complex" mod that should be handled differently or not at all (flagged and not installed using this tool).
+
+## Custom/Complex mods support
+Future: Install 'scripts' that allow very specific sequences with UI for decisions, for complex mods like VinyUI, that are gated by a hash (the install script is tied to a specific (hashed) version of the mod file to prevent catastrophic breaks).
+
+
+## Constraints
+WAR Mod Installer can be written in any language but must be a language that has an OSS installer or can be delivered as a binary from a Github build.
+
+This will be posted to Github as an OpenSource project and should be properly structured as such.
