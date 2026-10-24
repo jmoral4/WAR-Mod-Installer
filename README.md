@@ -33,9 +33,15 @@ resolve its permissions yourself; the app does not elevate or alter permissions.
 ## Install addons
 
 1. Close Return of Reckoning and its launcher.
-2. Choose the game folder containing `WAR.exe` or `WAR-64.exe`. **Find game** checks
-   known locations and Windows uninstall metadata, without crawling entire drives.
+2. The installer automatically checks known locations and Windows uninstall
+   metadata at startup and fills in the game directory when one installation is
+   found. **Find game** repeats this check, without crawling entire drives.
    If there are several candidates, explicitly choose one using **Browse**.
+   If none is detected, an existing `Return of Reckoning` folder under Windows'
+   Program Files (x86) directory (usually `C:\Program Files (x86)\Return of Reckoning`)
+   is used as a fallback. Otherwise, use **Browse**. The chosen folder must contain
+   `WAR.exe` or `WAR-64.exe` before addons can be installed. Sandbox mode keeps
+   discovery restricted to its sandbox and never uses this external fallback.
 3. Choose the folder containing your downloaded ZIP files and click **Scan archives**.
 4. Click the **Install** column for each wanted archive (or select a row and press
    Space). Select a row to read its module versions and declared dependencies.

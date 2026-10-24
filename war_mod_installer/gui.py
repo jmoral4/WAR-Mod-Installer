@@ -7,7 +7,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from .core import Scope, ConflictError, inspect_archive, make_plan, install
-from .discovery import discover
+from .discovery import discover, default_location
 
 BG = '#15191c'
 PANEL = '#20272b'
@@ -98,6 +98,8 @@ class App:
             if scope.check(mods).is_dir():
                 self.downloads.set(str(mods))
         root.after(100, self.poll)
+        if not self.game.get():
+            self.detect()
 
     def draw_header(self, canvas):
         # Original vector heraldry: crossed war hammers and a red/gold shield.
@@ -195,16 +197,29 @@ class App:
         dialog.grab_set()
 
     def detect(self):
-        def done(paths):
+        initial_game = self.game.get()
+
+        def locate():
+            paths = discover(self.scope, self.anchor)
+            return paths, default_location(self.scope) if not paths else None
+
+        def done(result):
+            paths, fallback = result
+            if self.game.get() != initial_game:
+                self.status.set('Kept your selected game directory. Verify it before installing.')
+                return
             if len(paths) == 1:
                 self.game.set(str(paths[0]))
                 self.status.set('Game found. Verify the directory before installing.')
+            elif not paths and fallback is not None:
+                self.game.set(str(fallback))
+                self.status.set('Default game folder found. Verify it contains WAR.exe or WAR-64.exe before installing.')
             elif not paths:
                 self.status.set('No game found in known locations. Use Browse to select it.')
             else:
                 self.set_details('Multiple installations found. Use Browse to choose one:\n' + '\n'.join(map(str, paths)))
                 self.status.set('Multiple installations found; choose the intended game folder.')
-        self.work('Checking known game locations…', lambda: discover(self.scope, self.anchor), done)
+        self.work('Checking known game locations…', locate, done)
 
     def parsing_changed(self):
         self.table.delete(*self.table.get_children())

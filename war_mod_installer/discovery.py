@@ -6,6 +6,21 @@ from pathlib import Path
 from .core import Scope, SafetyError, validate_game
 
 
+def default_location(scope: Scope) -> Path | None:
+    """Suggest an existing default folder; installation still validates the game."""
+    if scope.root is not None:
+        return None
+    parent = os.environ.get('ProgramFiles(x86)') or r'C:\Program Files (x86)'
+    path = Path(parent) / 'Return of Reckoning'
+    if not path.is_absolute():
+        return None
+    try:
+        path = scope.check(path)
+        return path if path.is_dir() else None
+    except (OSError, SafetyError):
+        return None
+
+
 def discover(scope: Scope, anchor: Path) -> list[Path]:
     if scope.root is not None:
         candidates = [scope.root / 'Sandbox' / 'Game', scope.root / 'Game', scope.root]
