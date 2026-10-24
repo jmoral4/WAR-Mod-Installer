@@ -6,8 +6,8 @@ import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from .core import Scope, ConflictError, inspect_archive, make_plan, install
-from .discovery import discover, default_location
+from .core import Scope, SafetyError, ConflictError, inspect_archive, make_plan, install
+from .discovery import discover, default_location, find_game_root
 
 BG = '#15191c'
 PANEL = '#20272b'
@@ -122,19 +122,37 @@ class App:
         ttk.Entry(row, textvariable=variable).pack(side='left', fill='x', expand=True)
         ttk.Button(row, text='Browse…', command=command).pack(side='right', padx=(8, 0))
 
-    def choose_directory(self, variable):
+    def choose_directory(self, variable, *, game=False):
         if self.busy:
             return
         initial = str(self.scope.root or self.anchor)
         value = filedialog.askdirectory(parent=self.root, initialdir=initial)
         if value:
             try:
-                variable.set(str(self.scope.check(Path(value))))
+                path = self.confirm_game_directory(value) if game else self.scope.check(Path(value))
+                if path is not None:
+                    variable.set(str(path))
             except Exception as exc:
                 messagebox.showerror('Folder unavailable', str(exc), parent=self.root)
 
     def pick_game(self):
-        self.choose_directory(self.game)
+        self.choose_directory(self.game, game=True)
+
+    def confirm_game_directory(self, value):
+        try:
+            selected = self.scope.check(Path(value))
+            game = find_game_root(selected, self.scope)
+        except (OSError, SafetyError) as exc:
+            messagebox.showerror('Game directory unavailable', str(exc), parent=self.root)
+            return None
+        if game != selected and not messagebox.askyesno(
+                'Use the game directory?',
+                f'You selected a folder inside the game:\n{selected}\n\n'
+                f'Use this game directory instead?\n{game}\n\n'
+                f'Addons will be installed into:\n{game / "Interface" / "AddOns"}',
+                parent=self.root, default='no'):
+            return None
+        return game
 
     def pick_downloads(self):
         self.choose_directory(self.downloads)
@@ -308,9 +326,13 @@ class App:
         if not game_text:
             messagebox.showinfo('Choose a game', 'Choose the game directory first.', parent=self.root)
             return
+        game = self.confirm_game_directory(game_text)
+        if game is None:
+            return
+        self.game.set(str(game))
         allow_legacy = self.allow_legacy_manifests.get()
         self.work('Checking installed addons and required dependencies…',
-                  lambda: make_plan(Path(game_text), selected, self.scope, allow_legacy_manifests=allow_legacy), self.confirm_plan)
+                  lambda: make_plan(game, selected, self.scope, allow_legacy_manifests=allow_legacy), self.confirm_plan)
 
     def confirm_plan(self, plan):
         lines = [f'Destination: {plan.game / "Interface" / "AddOns"}', '',

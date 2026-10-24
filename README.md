@@ -40,7 +40,11 @@ resolve its permissions yourself; the app does not elevate or alter permissions.
    If none is detected, an existing `Return of Reckoning` folder under Windows'
    Program Files (x86) directory (usually `C:\Program Files (x86)\Return of Reckoning`)
    is used as a fallback. Otherwise, use **Browse**. The chosen folder must contain
-   `WAR.exe` or `WAR-64.exe` before addons can be installed. Sandbox mode keeps
+   `WAR.exe` or `WAR-64.exe` before addons can be installed. If you browse to a
+   subfolder, the app offers to use the nearest valid game folder above it and
+   shows the addon destination. It changes the selection only if you accept.
+   Typed paths receive the same check when you click **Review & install selected**;
+   declining stops the review. Sandbox mode keeps ancestor checks and
    discovery restricted to its sandbox and never uses this external fallback.
 3. Choose the folder containing your downloaded ZIP files and click **Scan archives**.
 4. Click the **Install** column for each wanted archive (or select a row and press

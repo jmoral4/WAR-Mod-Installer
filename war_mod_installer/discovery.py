@@ -6,6 +6,24 @@ from pathlib import Path
 from .core import Scope, SafetyError, validate_game
 
 
+def find_game_root(path: Path, scope: Scope) -> Path:
+    """Validate a selected directory or its nearest game ancestor, within scope."""
+    path = scope.check(path)
+    if not path.is_dir():
+        raise SafetyError('Choose the game directory containing WAR.exe or WAR-64.exe.')
+    boundary = scope.check(scope.root) if scope.root is not None else None
+    for candidate in (path, *path.parents):
+        # Never probe an ancestor outside the sandbox, even for game markers.
+        if boundary is not None and not candidate.is_relative_to(boundary):
+            break
+        candidate = scope.check(candidate)
+        if any(scope.check(candidate / name).is_file() for name in ('WAR.exe', 'WAR-64.exe')):
+            # Propagate unsafe destination errors rather than searching past them.
+            return validate_game(candidate, scope)
+    raise SafetyError('This directory and its permitted parent folders do not contain WAR.exe or WAR-64.exe. '
+                      'Choose the game folder containing one of these files, or use Find game.')
+
+
 def default_location(scope: Scope) -> Path | None:
     """Suggest an existing default folder; installation still validates the game."""
     if scope.root is not None:

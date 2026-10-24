@@ -1,12 +1,14 @@
 from pathlib import Path
 import os
+import stat
 import tempfile
 import tkinter as tk
 import unittest
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from war_mod_installer.core import Scope, SafetyError, validate_game
-from war_mod_installer.discovery import default_location
+from war_mod_installer.core import Scope, SafetyError, validate_game, make_plan
+from war_mod_installer.discovery import default_location, find_game_root
 from war_mod_installer.gui import App
 
 
@@ -116,6 +118,170 @@ class DefaultDirectoryTests(unittest.TestCase):
             app = App(root, Scope(self.root), self.root)
             detect.assert_not_called()
             self.assertEqual(str(sandbox_game), app.game.get())
+
+
+class GameRootTests(unittest.TestCase):
+    def setUp(self):
+        workspace = Path(__file__).absolute().parents[1] / '.test-work'
+        workspace.mkdir(exist_ok=True)
+        self.temp = tempfile.TemporaryDirectory(dir=workspace)
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.scope = Scope(self.root)
+        self.game = self.root / 'Game'
+        self.addons = self.game / 'Interface' / 'AddOns'
+        self.nested = self.addons / 'Example' / 'Textures'
+        self.nested.mkdir(parents=True)
+        (self.game / 'WAR.exe').write_bytes(b'fixture, never executed')
+
+    def test_game_root_and_subfolders_find_same_root_for_both_executables(self):
+        for marker in ('WAR.exe', 'WAR-64.exe'):
+            (self.game / 'WAR.exe').unlink(missing_ok=True)
+            (self.game / marker).write_bytes(b'fixture, never executed')
+            for selected in (self.game, self.game / 'Interface', self.addons, self.nested):
+                with self.subTest(marker=marker, selected=selected):
+                    self.assertEqual(self.game, find_game_root(selected, self.scope))
+
+    def test_nearest_valid_root_wins(self):
+        (self.root / 'WAR.exe').write_bytes(b'outer fixture')
+        self.assertEqual(self.game, find_game_root(self.nested, self.scope))
+
+    def test_nonexistent_file_and_unrelated_directory_are_rejected(self):
+        unrelated = self.root / 'Other'
+        unrelated.mkdir()
+        for selected in (self.game / 'missing', self.game / 'WAR.exe', unrelated):
+            with self.subTest(selected=selected), self.assertRaises(SafetyError):
+                find_game_root(selected, self.scope)
+
+    def test_sandbox_boundary_is_inclusive_and_no_external_marker_is_probed(self):
+        self.assertEqual(self.game, find_game_root(self.nested, Scope(self.game)))
+        original = Path.is_file
+        def within_boundary(path):
+            self.assertTrue(path.is_relative_to(self.addons), f'External probe: {path}')
+            return original(path)
+        with patch.object(Path, 'is_file', within_boundary), self.assertRaisesRegex(SafetyError, 'permitted parent'):
+            find_game_root(self.nested, Scope(self.addons))
+
+    def test_out_of_scope_selection_is_rejected_before_filesystem_probe(self):
+        with patch.object(Path, 'is_dir') as probe, self.assertRaisesRegex(SafetyError, 'Sandbox mode'):
+            find_game_root(self.game, Scope(self.addons))
+        probe.assert_not_called()
+
+    def test_reparse_selection_and_marker_are_rejected_without_parent_fallback(self):
+        original = Path.lstat
+        for unsafe in (self.nested, self.game / 'WAR.exe', self.addons):
+            def attributes(path):
+                if path == unsafe:
+                    return SimpleNamespace(st_mode=stat.S_IFDIR, st_file_attributes=0x400)
+                return original(path)
+            with self.subTest(unsafe=unsafe), patch.object(Path, 'lstat', attributes):
+                with self.assertRaisesRegex(SafetyError, 'reparse'):
+                    find_game_root(self.nested, self.scope)
+
+    def test_candidate_validation_failure_is_not_skipped_for_outer_game(self):
+        (self.root / 'WAR.exe').write_bytes(b'outer fixture')
+        for error in (SafetyError('unsafe destination'), PermissionError('unreadable destination')):
+            with self.subTest(error=error), patch('war_mod_installer.discovery.validate_game', side_effect=error) as validate:
+                with self.assertRaises(type(error)):
+                    find_game_root(self.nested, self.scope)
+                validate.assert_called_once_with(self.game, self.scope)
+
+    def test_core_still_requires_exact_game_root(self):
+        with self.assertRaisesRegex(SafetyError, 'does not contain WAR.exe'):
+            make_plan(self.nested, (), self.scope)
+
+    def app_stub(self, selected):
+        app = App.__new__(App)
+        app.root = Mock()
+        app.scope = self.scope
+        app.anchor = self.root
+        app.busy = False
+        app.game = Mock()
+        app.game.get.return_value = str(selected)
+        app.closed = Mock()
+        app.closed.get.return_value = True
+        app.table = Mock()
+        app.table.get_children.return_value = ('archive',)
+        app.chosen = {'archive'}
+        app.rows = {'archive': (Mock(), None)}
+        app.allow_legacy_manifests = Mock()
+        app.allow_legacy_manifests.get.return_value = False
+        app.work = Mock()
+        app.confirm_plan = Mock()
+        return app
+
+    def test_browse_offers_explicit_root_and_destination_then_sets_only_if_accepted(self):
+        for accepted in (True, False):
+            app = self.app_stub(self.root / 'Previous')
+            with self.subTest(accepted=accepted), patch('war_mod_installer.gui.filedialog.askdirectory', return_value=str(self.nested)), \
+                    patch('war_mod_installer.gui.messagebox.askyesno', return_value=accepted) as prompt:
+                app.pick_game()
+            prompt.assert_called_once()
+            message = prompt.call_args.args[1]
+            for path in (self.nested, self.game, self.addons):
+                self.assertIn(str(path), message)
+            self.assertEqual('no', prompt.call_args.kwargs['default'])
+            if accepted:
+                app.game.set.assert_called_once_with(str(self.game))
+            else:
+                app.game.set.assert_not_called()
+
+    def test_browse_correct_root_and_cancel_need_no_confirmation(self):
+        for selection in (str(self.game), ''):
+            app = self.app_stub(self.game)
+            with self.subTest(selection=selection), patch('war_mod_installer.gui.filedialog.askdirectory', return_value=selection), \
+                    patch('war_mod_installer.gui.messagebox.askyesno') as prompt:
+                app.pick_game()
+            prompt.assert_not_called()
+            if selection:
+                app.game.set.assert_called_once_with(str(self.game))
+            else:
+                app.game.set.assert_not_called()
+
+    def test_invalid_browse_shows_error_and_keeps_existing_selection(self):
+        app = self.app_stub(self.game)
+        with patch('war_mod_installer.gui.filedialog.askdirectory', return_value=str(self.root)), \
+                patch('war_mod_installer.gui.messagebox.askyesno') as prompt, \
+                patch('war_mod_installer.gui.messagebox.showerror') as error:
+            app.pick_game()
+        error.assert_called_once()
+        self.assertIn('Find game', error.call_args.args[1])
+        prompt.assert_not_called()
+        app.game.set.assert_not_called()
+
+    def test_typed_subfolder_acceptance_reviews_corrected_root_and_decline_stops(self):
+        for accepted in (True, False):
+            app = self.app_stub(self.nested)
+            with self.subTest(accepted=accepted), patch('war_mod_installer.gui.messagebox.askyesno', return_value=accepted), \
+                    patch('war_mod_installer.gui.make_plan') as plan:
+                app.review()
+                if accepted:
+                    app.game.set.assert_called_once_with(str(self.game))
+                    app.work.assert_called_once()
+                    app.work.call_args.args[1]()
+                    plan.assert_called_once_with(self.game, (app.rows['archive'][0],), self.scope, allow_legacy_manifests=False)
+                else:
+                    app.game.set.assert_not_called()
+                    app.work.assert_not_called()
+                    plan.assert_not_called()
+
+    def test_invalid_typed_path_stops_before_planning(self):
+        app = self.app_stub(self.root)
+        with patch('war_mod_installer.gui.messagebox.showerror') as error:
+            app.review()
+        error.assert_called_once()
+        app.work.assert_not_called()
+        app.game.set.assert_not_called()
+
+    def test_download_picker_does_not_correct_game_subfolders(self):
+        app = self.app_stub(self.game)
+        app.downloads = Mock()
+        with patch('war_mod_installer.gui.filedialog.askdirectory', return_value=str(self.nested)), \
+                patch('war_mod_installer.gui.messagebox.askyesno') as prompt:
+            app.pick_downloads()
+        app.downloads.set.assert_called_once_with(str(self.nested))
+        app.game.set.assert_not_called()
+        prompt.assert_not_called()
 
 
 if __name__ == '__main__':
